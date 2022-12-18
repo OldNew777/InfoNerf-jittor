@@ -254,5 +254,6 @@ def train():
 if __name__ == '__main__':
     # disable multi-GPUs before running because of the bug of Jittor
     jt.flags.use_cuda = 1
-    jt.init
-    train()
+
+    # train()
+
