@@ -4,8 +4,164 @@ import time
 import jittor as jt
 import numpy as np
 from tqdm import tqdm
+import random
 
 from dataset.load_llff import load_llff_data
+from dataset.load_blender import load_blender_data
+from dataset.load_dtu import load_dtu_data
+from utils.generate_renderpath import generate_renderpath
+
+from mylogger import logger
+from run_nerf_helpers import *
+
+np.random.seed(0)
+jt.set_global_seed(0)
+random.seed(0)
+
+
+def batchify(fn, chunk):
+    """Constructs a version of 'fn' that applies to smaller batches.
+    """
+    if chunk is None:
+        return fn
+
+    def ret(inputs):
+        return jt.concat([fn(inputs[i:i + chunk]) for i in range(0, inputs.shape[0], chunk)], 0)
+
+    return ret
+
+
+def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, netchunk=1024*64) -> jt.Var:
+    """Prepares inputs and applies network 'fn'.
+    """
+    inputs_flat = jt.reshape(inputs, [-1, inputs.shape[-1]])
+    embedded = embed_fn(inputs_flat)
+
+    if viewdirs is not None:
+        input_dirs = viewdirs[:,None].expand(inputs.shape)
+        input_dirs_flat = jt.reshape(input_dirs, [-1, input_dirs.shape[-1]])
+        embedded_dirs = embeddirs_fn(input_dirs_flat)
+        embedded = jt.concat([embedded, embedded_dirs], -1)
+
+    outputs_flat = batchify(fn, netchunk)(embedded)
+    outputs = jt.reshape(outputs_flat, list(inputs.shape[:-1]) + [outputs_flat.shape[-1]])
+    return outputs
+
+
+def create_nerf(args):
+    """Instantiate NeRF's MLP model.
+    """
+    embed_fn, input_ch = get_embedder(args.multires, args.i_embed)
+
+    input_ch_views = 0
+    embeddirs_fn = None
+    if args.use_viewdirs:
+        embeddirs_fn, input_ch_views = get_embedder(args.multires_views, args.i_embed)
+    output_ch = 5 if args.N_importance > 0 else 4
+    skips = [4]
+    if args.alpha_model_path is None:
+        model = NeRF(D=args.netdepth, W=args.netwidth,
+                     input_ch=input_ch, output_ch=output_ch, skips=skips,
+                     input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs)
+        grad_vars = list(model.parameters())
+    else:
+        alpha_model = NeRF(D=args.netdepth_fine, W=args.netwidth_fine,
+                           input_ch=input_ch, output_ch=output_ch, skips=skips,
+                           input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs)
+        print('Alpha model reloading from', args.alpha_model_path)
+        ckpt = jt.load(args.alpha_model_path)
+        alpha_model.load_state_dict(ckpt['network_fine_state_dict'])
+        if not args.no_coarse:
+            model = NeRF_RGB(D=args.netdepth, W=args.netwidth,
+                             input_ch=input_ch, output_ch=output_ch, skips=skips,
+                             input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs, alpha_model=alpha_model)
+            grad_vars = list(model.parameters())
+        else:
+            model = None
+            grad_vars = []
+
+    model_fine = None
+    if args.N_importance > 0:
+        if args.alpha_model_path is None:
+            model_fine = NeRF(D=args.netdepth_fine, W=args.netwidth_fine,
+                              input_ch=input_ch, output_ch=output_ch, skips=skips,
+                              input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs)
+        else:
+            model_fine = NeRF_RGB(D=args.netdepth_fine, W=args.netwidth_fine,
+                                  input_ch=input_ch, output_ch=output_ch, skips=skips,
+                                  input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs,
+                                  alpha_model=alpha_model)
+        grad_vars += list(model_fine.parameters())
+
+    network_query_fn = lambda inputs, viewdirs, network_fn: run_network(inputs, viewdirs, network_fn,
+                                                                        embed_fn=embed_fn,
+                                                                        embeddirs_fn=embeddirs_fn,
+                                                                        netchunk=args.netchunk)
+
+    # Create optimizer
+    optimizer = jt.optim.Adam(params=grad_vars, lr=args.lrate, betas=(0.9, 0.999))
+
+    start = 0
+    basedir = args.basedir
+    expname = args.expname
+
+    ##########################
+
+    # Load checkpoints
+    if args.ft_path is not None and args.ft_path != 'None':
+        ckpts = [args.ft_path]
+    else:
+        ckpts = [os.path.join(basedir, expname, f) for f in sorted(os.listdir(os.path.join(basedir, expname))) if
+                 'tar' in f]
+
+    print('Found ckpts', ckpts)
+    if len(ckpts) > 0 and not args.no_reload:
+        ckpt_path = ckpts[-1]
+        if args.ckpt_render_iter is not None:
+            ckpt_path = os.path.join(os.path.join(basedir, expname, f'{args.ckpt_render_iter:06d}.tar'))
+
+        print('Reloading from', ckpt_path)
+        ckpt = jt.load(ckpt_path)
+
+        start = ckpt['global_step']
+        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+
+        # Load model
+        model.load_state_dict(ckpt['network_fn_state_dict'])
+        if model_fine is not None:
+            model_fine.load_state_dict(ckpt['network_fine_state_dict'])
+
+    ##########################
+
+    render_kwargs_train = {
+        'network_query_fn': network_query_fn,
+        'perturb': args.perturb,
+        'N_importance': args.N_importance,
+        'network_fine': model_fine,
+        'N_samples': args.N_samples,
+        'network_fn': model,
+        'use_viewdirs': args.use_viewdirs,
+        'white_bkgd': args.white_bkgd,
+        'raw_noise_std': args.raw_noise_std,
+        'entropy_ray_zvals': args.entropy,
+        'extract_alpha': args.smoothing
+    }
+
+    # NDC only good for LLFF-style forward facing data
+    if args.dataset_type != 'llff' or args.no_ndc:
+        print('Not ndc!')
+        render_kwargs_train['ndc'] = False
+        render_kwargs_train['lindisp'] = args.lindisp
+    else:
+        render_kwargs_train['ndc'] = True
+
+    render_kwargs_test = {k: render_kwargs_train[k] for k in render_kwargs_train}
+    render_kwargs_test['perturb'] = False
+    render_kwargs_test['raw_noise_std'] = 0.
+
+    ##########################
+
+    return render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer
 
 
 def config_parser():
@@ -236,7 +392,7 @@ def train():
         render_first_time = False
 
     ########################################
-    #              DTU                     #
+    #              LLFF                    #
     ########################################
     if args.dataset_type == 'llff':
         data_info = jt.load('./data/nerf_llff_data/data_splits.pth')
@@ -249,11 +405,139 @@ def train():
         images, poses, bds, render_poses, i_test = load_llff_data(full_datadir, args.factor,
                                                                   recenter=True, bd_factor=.75,
                                                                   spherify=args.spherify)
+        hwf = poses[0, :3, -1]
+        poses = poses[:, :3, :4]
+        logger.info('Loaded llff', images.shape, render_poses.shape, hwf, args.datadir)
+
+        if not isinstance(i_test, list):
+            i_test = [i_test]
+
+        if args.llffhold > 0:
+            logger.info('Auto LLFF holdout,', args.llffhold)
+            i_test = np.arange(images.shape[0])[::args.llffhold]
+
+        if args.test_scene is not None:
+            i_test = np.array([i for i in args.test_scene])
+
+        if i_test[0] < 0:
+            i_test = []
+
+        i_val = i_test
+
+        if args.train_scene is None:
+            i_train = np.array([i for i in np.arange(int(images.shape[0])) if
+                                (i not in i_test and i not in i_val)])
+        else:
+            i_train = np.array([i for i in args.train_scene if
+                                (i not in i_test and i not in i_val)])
+
+        if args.fewshot > 0:
+            i_train = data_info[category][f'{args.fewshot}shot_split'][0]
+            if args.train_scene is None:
+                np.random.seed(args.fewshot_seed)
+                i_train = np.random.choice(i_train, args.fewshot, replace=False)
+            else:
+                i_train = np.array(args.train_scene)
+        logger.info('i_train', i_train)
+        logger.info('DEFINING BOUNDS')
+
+        if args.no_ndc:
+            near = np.ndarray.min(bds) * .9
+            far = np.ndarray.max(bds) * 1.
+        else:
+            near = 0.
+            far = 1.
+        logger.info('NEAR FAR', near, far)
+
+    ########################################
+    #              DTU                     #
+    ########################################
+
+    elif args.dataset_type == 'dtu':
+        images, poses, hwf, masks = load_dtu_data(args.datadir, args.train_scene, args.maskdir)
+        render_poses = poses
+        logger.info('Loaded DTU', images.shape, poses.shape, hwf, args.datadir)
+        if args.test_scene is not None:
+            i_test = np.array([i for i in args.test_scene])
+
+        if i_test[0] < 0:
+            i_test = []
+
+        i_val = i_test
+        if args.train_scene is None:
+            i_train = np.array([i for i in np.arange(int(images.shape[0])) if
+                                (i not in i_test and i not in i_val)])
+        else:
+            i_train = np.array([i for i in args.train_scene if
+                                (i not in i_test and i not in i_val)])
+
+        i_test = np.array([i for i in range(len(poses)) if (i not in i_train)])
+
+        near = 0.1
+        far = 5.0
+
+    ########################################
+    #              Blender                 #
+    ########################################
+
+    elif args.dataset_type == 'blender':
+        images, poses, render_poses, hwf, i_split = load_blender_data(args.datadir, args.half_res, args.testskip)
+        logger.info('Loaded blender', images.shape, render_poses.shape, hwf, args.datadir)
+        i_train, i_val, i_test = i_split
+        near = 2.
+        far = 6.
+
+        if args.fewshot > 0:
+            if args.train_scene is None:
+                np.random.seed(args.fewshot_seed)
+                i_train = np.random.choice(i_train, args.fewshot, replace=False)
+            else:
+                i_train = np.array(args.train_scene)
+            logger.info('i_train', i_train)
+
+        images_mask = images[..., -1]
+        if args.white_bkgd:
+            images = images[..., :3] * images[..., -1:] + (1. - images[..., -1:])
+        else:
+            images = images[..., :3]
+
+    else:
+        logger.info('Unknown dataset type', args.dataset_type, 'exiting')
+        return
+
+    # Cast intrinsics to right types
+    H, W, focal = hwf
+    H, W = int(H), int(W)
+    hwf = [H, W, focal]
+
+    if args.render_test:
+        render_poses = np.array(poses[i_test])
+    elif args.render_train:
+        render_poses = np.array(poses[i_train])
+    elif args.render_mypath:
+        # render_poses = generate_renderpath(np.array(poses[i_test]), focal)
+        render_poses = generate_renderpath(np.array(poses[i_test])[3:4], focal, sc=1)
+
+    # Create log dir and copy the config file
+    basedir = args.basedir
+    expname = args.expname
+    os.makedirs(os.path.join(basedir, expname), exist_ok=True)
+    f = os.path.join(basedir, expname, 'args.txt')
+    with open(f, 'w') as file:
+        for arg in sorted(vars(args)):
+            attr = getattr(args, arg)
+            file.write('{} = {}\n'.format(arg, attr))
+    if args.config is not None:
+        f = os.path.join(basedir, expname, 'config.txt')
+        with open(f, 'w') as file:
+            file.write(open(args.config, 'r').read())
+
+    # Create nerf model
+    render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(args)
 
 
 if __name__ == '__main__':
     # disable multi-GPUs before running because of the bug of Jittor
-    jt.flags.use_cuda = 1
+    jt.flags.use_cuda = jt.has_cuda
 
     # train()
-

@@ -4,6 +4,8 @@ from pathlib import Path
 
 import json
 
+from mylogger import logger
+
 
 ########## Slightly modified version of LLFF data loading code
 ##########  see https://github.com/Fyusion/LLFF for original
@@ -42,22 +44,22 @@ def _minify(basedir, factors=[], resolutions=[]):
         if os.path.exists(imgdir):
             continue
 
-        print('Minifying', r, basedir)
+        logger.info('Minifying', r, basedir)
 
         os.makedirs(imgdir)
         check_output('cp {}/* {}'.format(imgdir_orig, imgdir), shell=True)
 
         ext = imgs[0].split('.')[-1]
         args = ' '.join(['mogrify', '-resize', resizearg, '-format', 'png', '*.{}'.format(ext)])
-        print(args)
+        logger.info(args)
         os.chdir(imgdir)
         check_output(args, shell=True)
         os.chdir(wd)
 
         if ext != 'png':
             check_output('rm {}/*.{}'.format(imgdir, ext), shell=True)
-            print('Removed duplicates')
-        print('Done')
+            logger.info('Removed duplicates')
+        logger.info('Done')
 
 
 def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
@@ -90,13 +92,13 @@ def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
 
     imgdir = os.path.join(basedir, 'images' + sfx)
     if not os.path.exists(imgdir):
-        print(imgdir, 'does not exist, returning')
+        logger.info(f'{imgdir} does not exist, returning')
         return
 
     imgfiles = [os.path.join(imgdir, f) for f in sorted(os.listdir(imgdir)) if
                 f.endswith('JPG') or f.endswith('jpg') or f.endswith('png')]
     if poses.shape[-1] != len(imgfiles):
-        print('Mismatch between imgs {} and poses {} !!!!'.format(len(imgfiles), poses.shape[-1]))
+        logger.info('Mismatch between imgs {} and poses {} !!!!'.format(len(imgfiles), poses.shape[-1]))
         return
 
     sh = imageio.imread(imgfiles[0]).shape
@@ -112,10 +114,10 @@ def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
         else:
             return imageio.imread(f)
 
-    imgs = imgs = [imread(f)[..., :3] / 255. for f in imgfiles]
+    imgs = [imread(f)[..., :3] / 255. for f in imgfiles]
     imgs = np.stack(imgs, -1)
 
-    print('Loaded image data', imgs.shape, poses[:, -1, 0])
+    logger.info(f'Loaded image data', imgs.shape, poses[:, -1, 0])
     return poses, bds, imgs
 
 
@@ -237,9 +239,9 @@ def spherify_poses(poses, bds):
 
 def load_llff_data(basedir, factor=8, recenter=True, bd_factor=.75, spherify=False, path_zflat=False):
     poses, bds, imgs = _load_data(basedir, factor=factor)  # factor=8 downsamples original imgs by 8x
-    print('Loaded', basedir, bds.min(), bds.max())
+    logger.info('Loaded', basedir, bds.min(), bds.max())
 
-    # print('poses_bound.npy:\n', poses[:,:,0])
+    # logger.info('poses_bound.npy:\n', poses[:,:,0])
 
     # Correct rotation matrix ordering and move variable dim to axis 0
     poses = np.concatenate([poses[:, 1:2, :], -poses[:, 0:1, :], poses[:, 2:, :]], 1)  # [-u, r, -t] -> [r, u, -t]
@@ -247,14 +249,14 @@ def load_llff_data(basedir, factor=8, recenter=True, bd_factor=.75, spherify=Fal
     imgs = np.moveaxis(imgs, -1, 0).astype(np.float32)
     images = imgs
     bds = np.moveaxis(bds, -1, 0).astype(np.float32)
-    print("bds:", bds[0])
+    logger.info("bds:", bds[0])
 
     # Rescale if bd_factor is provided
     sc = 1. if bd_factor is None else 1. / (bds.min() * bd_factor)
     poses[:, :3, 3] *= sc
     bds *= sc
 
-    # print('before recenter:\n', poses[0])
+    # logger.info('before recenter:\n', poses[0])
     if recenter:
         poses = recenter_poses(poses)
 
@@ -264,8 +266,8 @@ def load_llff_data(basedir, factor=8, recenter=True, bd_factor=.75, spherify=Fal
     else:
 
         c2w = poses_avg(poses)
-        print('recentered', c2w.shape)
-        print(c2w[:3, :4])
+        logger.info('recentered', c2w.shape)
+        logger.info(c2w[:3, :4])
 
         ## Get spiral
         # Get average pose
@@ -299,12 +301,12 @@ def load_llff_data(basedir, factor=8, recenter=True, bd_factor=.75, spherify=Fal
     render_poses = np.array(render_poses).astype(np.float32)
 
     c2w = poses_avg(poses)
-    print('Data:')
-    print(poses.shape, images.shape, bds.shape)
+    logger.info('Data:')
+    logger.info(poses.shape, images.shape, bds.shape)
 
     dists = np.sum(np.square(c2w[:3, 3] - poses[:, :3, 3]), -1)
     i_test = np.argmin(dists)
-    print('HOLDOUT view is', i_test)
+    logger.info('HOLDOUT view is', i_test)
 
     images = images.astype(np.float32)
     poses = poses.astype(np.float32)

@@ -3,6 +3,8 @@ import os, imageio
 from pathlib import Path
 import cv2
 
+from mylogger import logger
+
 
 def load_dtu_data(path, train_scene, mask_path=None):
     imgdir = os.path.join(path, 'image')
@@ -75,10 +77,10 @@ def load_dtu_data(path, train_scene, mask_path=None):
         poses.append(pose[:3, :4])
 
     poses = np.stack(poses)
-    print('poses shape:', poses.shape)
+    logger.info('poses shape:', poses.shape)
 
     focal = focal / num
     H, W = imgs[0].shape[:2]
-    print("HWF", H, W, focal)
+    logger.info("HWF", H, W, focal)
 
     return imgs, poses, [H, W, focal], masks
