@@ -12,14 +12,13 @@ import wandb
 from mylogger import logger
 
 from dataset.load_blender import load_blender_data
-from data import *
 
 from run_nerf_helpers import *
 from utils.func import *
 from utils.loss import *
 from utils.generate_near_c2w import *
-
-from utils.generate_renderpath import generate_renderpath
+from utils.generate_renderpath import *
+from model.model import *
 
 np.random.seed(0)
 jt.set_global_seed(0)
@@ -242,26 +241,16 @@ def create_nerf(args):
         logger.info('Alpha model reloading from', args.alpha_model_path)
         ckpt = jt.load(args.alpha_model_path)
         alpha_model.load_state_dict(ckpt['network_fine_state_dict'])
-        if not args.no_coarse:
-            model = NeRF_RGB(D=args.netdepth, W=args.netwidth,
-                             input_ch=input_ch, output_ch=output_ch, skips=skips,
-                             input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs, alpha_model=alpha_model)
-            grad_vars = list(model.parameters())
-        else:
-            model = None
-            grad_vars = []
+
+        model = None
+        grad_vars = []
 
     model_fine = None
     if args.N_importance > 0:
-        if args.alpha_model_path is None:
-            model_fine = NeRF(D=args.netdepth_fine, W=args.netwidth_fine,
-                              input_ch=input_ch, output_ch=output_ch, skips=skips,
-                              input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs)
-        else:
-            model_fine = NeRF_RGB(D=args.netdepth_fine, W=args.netwidth_fine,
-                                  input_ch=input_ch, output_ch=output_ch, skips=skips,
-                                  input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs,
-                                  alpha_model=alpha_model)
+        model_fine = NeRF(D=args.netdepth_fine, W=args.netwidth_fine,
+                          input_ch=input_ch, output_ch=output_ch, skips=skips,
+                          input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs)
+
         grad_vars += list(model_fine.parameters())
 
     network_query_fn = lambda inputs, viewdirs, network_fn: run_network(inputs, viewdirs, network_fn,
@@ -823,10 +812,6 @@ def train():
         fun_entropy_loss = EntropyLoss(args)
         jt.nn.CrossEntropyLoss()
 
-    if args.smoothing:
-        get_near_c2w = GetNearC2W(args)
-        fun_KL_divergence_loss = SmoothingLoss(args)
-
     use_batching = not args.no_batching
     logger.info('use_batching', use_batching)
 
@@ -904,13 +889,6 @@ def train():
                 batch_rays = jt.stack([rays_o, rays_d], 0)  # (2, N_rand, 3)
                 target_s = target[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
 
-                if args.smoothing:
-                    rgb_near_pose = get_near_c2w(rgb_pose, iter_=i)
-                    near_rays_o, near_rays_d = get_rays(H, W, focal,
-                                                        jt.array(rgb_near_pose))  # (H, W, 3), (H, W, 3)
-                    near_rays_o = near_rays_o[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
-                    near_rays_d = near_rays_d[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
-                    near_batch_rays = jt.stack([near_rays_o, near_rays_d], 0)  # (2, N_rand, 3)
 
             ########################################################
             #            Sampling for unseen rays                  #
@@ -956,34 +934,11 @@ def train():
                 rays_d_ent = rays_d[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
                 batch_rays_entropy = jt.stack([rays_o_ent, rays_d_ent], 0)  # (2, N_rand, 3)
 
-                ########################################################
-                #   Ray sampling for information gain reduction loss   #
-                ########################################################
-
-                if args.smoothing:
-                    if args.smooth_sampling_method == 'near_pixel':
-                        near_select_coords = get_near_pixel(select_coords, args.smooth_pixel_range)
-                        ent_near_rays_o = rays_o[near_select_coords[:, 0], near_select_coords[:, 1]]  # (N_rand, 3)
-                        ent_near_rays_d = rays_d[near_select_coords[:, 0], near_select_coords[:, 1]]  # (N_rand, 3)
-                        ent_near_batch_rays = jt.stack([ent_near_rays_o, ent_near_rays_d], 0)  # (2, N_rand, 3)
-                    elif args.smooth_sampling_method == 'near_pose':
-                        ent_near_pose = get_near_c2w(pose, iter_=i)
-                        ent_near_rays_o, ent_near_rays_d = get_rays(H, W, focal,
-                                                                    jt.array(ent_near_pose))  # (H, W, 3), (H, W, 3)
-                        ent_near_rays_o = ent_near_rays_o[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
-                        ent_near_rays_d = ent_near_rays_d[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
-                        ent_near_batch_rays = jt.stack([ent_near_rays_o, ent_near_rays_d], 0)  # (2, N_rand, 3)
-
         N_rgb = batch_rays.shape[1]
 
         if args.entropy and (args.N_entropy != 0):
             batch_rays = jt.concat([batch_rays, batch_rays_entropy], 1)
 
-        if args.smoothing:
-            if args.entropy and (args.N_entropy != 0):
-                batch_rays = jt.concat([batch_rays, near_batch_rays, ent_near_batch_rays], 1)
-            else:
-                batch_rays = jt.concat([batch_rays, near_batch_rays], 1)
         rgb, disp, acc, depth, extras = render(H, W, focal, chunk=args.chunk, rays=batch_rays,
                                                verbose=i < 10, retraw=True,
                                                **render_kwargs_train)
@@ -1022,13 +977,6 @@ def train():
         ########################################################
 
         smoothing_lambda = args.smoothing_lambda * args.smoothing_rate ** (int(i / args.smoothing_step_size))
-
-        if args.smoothing:
-            smoothing_loss = fun_KL_divergence_loss(alpha_raw)
-            logging_info['KL_loss'] = smoothing_loss
-            if args.smoothing_end_iter is not None:
-                if i > args.smoothing_end_iter:
-                    smoothing_loss = 0
 
         trans = extras['raw'][..., -1]
         loss = img_loss \
