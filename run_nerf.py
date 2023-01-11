@@ -16,8 +16,6 @@ from dataset.load_blender import load_blender_data
 from run_nerf_helpers import *
 from utils.func import *
 from utils.loss import *
-from utils.generate_near_c2w import *
-from utils.generate_renderpath import *
 from model.model import *
 
 np.random.seed(0)
@@ -64,7 +62,6 @@ def batchify_rays(rays_flat, chunk=1024 * 32, **kwargs):
             if k not in all_ret:
                 all_ret[k] = []
             all_ret[k].append(ret[k])
-
     all_ret = {k: jt.concat(all_ret[k], 0) for k in all_ret}
     return all_ret
 
@@ -112,9 +109,9 @@ def render(H, W, focal, chunk=1024 * 32, rays=None, c2w=None, ndc=True,
         viewdirs = jt.reshape(viewdirs, [-1, 3]).float()
 
     sh = rays_d.shape  # [..., 3]
-    if ndc:
-        # for forward facing scenes
-        rays_o, rays_d = ndc_rays(H, W, focal, 1., rays_o, rays_d)
+    # if ndc:
+    #     # for forward facing scenes
+    #     rays_o, rays_d = ndc_rays(H, W, focal, 1., rays_o, rays_d)
 
     # Create ray batch
     rays_o = jt.reshape(rays_o, [-1, 3]).float()
@@ -138,7 +135,8 @@ def render(H, W, focal, chunk=1024 * 32, rays=None, c2w=None, ndc=True,
     return ret_list + [ret_dict]
 
 
-def render_path(render_poses, hwf, chunk, render_kwargs, gt_imgs=None, savedir=None, render_factor=0):
+def render_path(render_poses, hwf, chunk, render_kwargs,
+                gt_imgs=None, savedir=None, render_factor=0):
     H, W, focal = hwf
 
     if render_factor != 0:
@@ -151,17 +149,14 @@ def render_path(render_poses, hwf, chunk, render_kwargs, gt_imgs=None, savedir=N
     disps = []
     psnrs = []
     accs = []
-    t = time.time()
     for i, c2w in enumerate(tqdm(render_poses)):
-        t_now = time.time()
-        logger.info(f'Iter {i:04}, time = {t_now - t}')
-        t = t_now
-        rgb, disp, acc, depth, extras = render(H, W, focal, chunk=chunk, c2w=c2w[:3, :4], retraw=True, **render_kwargs)
+        rgb, disp, acc, depth, extras = \
+            render(H, W, focal, chunk=chunk, c2w=c2w[:3, :4], retraw=True, **render_kwargs)
         rgbs.append(rgb.cpu().numpy())
         disps.append(disp.cpu().numpy())
         accs.append(acc.cpu().numpy())
-        if i == 0:
-            logger.info(rgb.shape, disp.shape)
+        # if i == 0:
+        #     logger.info(rgb.shape, disp.shape)
 
         """
         if gt_imgs is not None and render_factor==0:
@@ -190,34 +185,6 @@ def render_path(render_poses, hwf, chunk, render_kwargs, gt_imgs=None, savedir=N
     return rgbs, disps
 
 
-def render_test_ray(rays_o, rays_d, hwf, ndc, near, far, use_viewdirs, N_samples, network, network_query_fn, **kwargs):
-    H, W, focal = hwf
-    if use_viewdirs:
-        # provide ray directions as input
-        viewdirs = rays_d
-        viewdirs = viewdirs / jt.norm(viewdirs, dim=-1, keepdims=True)
-        viewdirs = jt.reshape(viewdirs, [-1, 3]).float()
-
-    if ndc:
-        # for forward facing scenes
-        rays_o, rays_d = ndc_rays(H, W, focal, 1., rays_o, rays_d)
-
-    # Create ray batch
-    rays_o = jt.reshape(rays_o, [-1, 3]).float()
-    rays_d = jt.reshape(rays_d, [-1, 3]).float()
-
-    near, far = near * jt.ones_like(rays_d[..., :1]), far * jt.ones_like(rays_d[..., :1])
-
-    t_vals = jt.linspace(0., 1., steps=N_samples)
-    z_vals = near * (1. - t_vals) + far * (t_vals)
-
-    z_vals = z_vals.reshape([rays_o.shape[0], N_samples])
-
-    rgb, sigma, depth_maps, weights = sample_sigma(rays_o, rays_d, viewdirs, network, z_vals, network_query_fn)
-
-    return rgb, sigma, z_vals, depth_maps, weights
-
-
 def create_nerf(args):
     """Instantiate NeRF's MLP model.
     """
@@ -229,21 +196,10 @@ def create_nerf(args):
         embeddirs_fn, input_ch_views = get_embedder(args.multires_views, args.i_embed)
     output_ch = 5 if args.N_importance > 0 else 4
     skips = [4]
-    if args.alpha_model_path is None:
-        model = NeRF(D=args.netdepth, W=args.netwidth,
-                     input_ch=input_ch, output_ch=output_ch, skips=skips,
-                     input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs)
-        grad_vars = list(model.parameters())
-    else:
-        alpha_model = NeRF(D=args.netdepth_fine, W=args.netwidth_fine,
-                           input_ch=input_ch, output_ch=output_ch, skips=skips,
-                           input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs)
-        logger.info('Alpha model reloading from', args.alpha_model_path)
-        ckpt = jt.load(args.alpha_model_path)
-        alpha_model.load_state_dict(ckpt['network_fine_state_dict'])
-
-        model = None
-        grad_vars = []
+    model = NeRF(D=args.netdepth, W=args.netwidth,
+                 input_ch=input_ch, output_ch=output_ch, skips=skips,
+                 input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs)
+    grad_vars = list(model.parameters())
 
     model_fine = None
     if args.N_importance > 0:
@@ -262,7 +218,7 @@ def create_nerf(args):
     optimizer = jt.optim.Adam(params=grad_vars, lr=args.lrate, betas=(0.9, 0.999))
 
     start = 0
-    basedir = os.path.relpath(args.basedir)
+    basedir = args.basedir
     expname = args.expname
 
     ##########################
@@ -307,13 +263,14 @@ def create_nerf(args):
         'extract_alpha': args.smoothing
     }
 
-    # NDC only good for LLFF-style forward facing data
-    if args.dataset_type != 'llff' or args.no_ndc:
-        logger.info('Not ndc!')
-        render_kwargs_train['ndc'] = False
-        render_kwargs_train['lindisp'] = args.lindisp
-    else:
-        render_kwargs_train['ndc'] = True
+    # # TODO
+    # # NDC only good for LLFF-style forward facing data
+    # if args.dataset_type != 'llff' or args.no_ndc:
+    #     logger.info('Not ndc!')
+    #     render_kwargs_train['ndc'] = False
+    #     render_kwargs_train['lindisp'] = args.lindisp
+    # else:
+    #     render_kwargs_train['ndc'] = True
 
     render_kwargs_test = {k: render_kwargs_train[k] for k in render_kwargs_train}
     render_kwargs_test['perturb'] = False
@@ -380,10 +337,10 @@ def render_rays(ray_batch,
     near, far = bounds[..., 0], bounds[..., 1]  # [-1,1]
 
     t_vals = jt.linspace(0., 1., steps=N_samples)
-    if not lindisp:
-        z_vals = near * (1. - t_vals) + far * (t_vals)
-    else:
-        z_vals = 1. / (1. / near * (1. - t_vals) + 1. / far * (t_vals))
+    # if not lindisp:
+    z_vals = near * (1. - t_vals) + far * (t_vals)
+    # else:
+    #     z_vals = 1. / (1. / near * (1. - t_vals) + 1. / far * (t_vals))
 
     z_vals = z_vals.expand([N_rays, N_samples])
 
@@ -395,11 +352,11 @@ def render_rays(ray_batch,
         # stratified samples in those intervals
         t_rand = jt.rand(z_vals.shape)
 
-        # Pytest, overwrite u with numpy's fixed random numbers
-        if pytest:
-            np.random.seed(0)
-            t_rand = np.random.rand(*list(z_vals.shape))
-            t_rand = jt.array(t_rand)
+        # # Pytest, overwrite u with numpy's fixed random numbers
+        # if pytest:
+        #     np.random.seed(0)
+        #     t_rand = np.random.rand(*list(z_vals.shape))
+        #     t_rand = jt.array(t_rand)
 
         z_vals = lower + (upper - lower) * t_rand
 
@@ -427,7 +384,8 @@ def render_rays(ray_batch,
         z_samples = sample_pdf(z_vals_mid, weights[..., 1:-1], N_importance, det=(perturb == 0.), pytest=pytest)
         z_samples = z_samples.detach()
 
-        z_vals, _ = jt.argsort(jt.concat([z_vals, z_samples], -1), -1)
+        # FIXME
+        _, z_vals = jt.argsort(jt.concat([z_vals, z_samples], -1), -1)
         pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :,
                                                             None]  # [N_rays, N_samples + N_importance, 3]
 
@@ -459,12 +417,12 @@ def render_rays(ray_batch,
         ret['rgb0'] = rgb_map_0
         ret['disp0'] = disp_map_0
         ret['acc0'] = acc_map_0
-        ret['z_std'] = std(z_samples)  # [N_rays]
+        # ret['z_std'] = std(z_samples)  # [N_rays]
 
-    if sigma_loss is not None and ray_batch.shape[-1] > 11:
-        depths = ray_batch[:, 8]
-        ret['sigma_loss'] = sigma_loss.calculate_loss(rays_o, rays_d, viewdirs, near, far, depths, network_query_fn,
-                                                      network_fine)
+    # if sigma_loss is not None and ray_batch.shape[-1] > 11:
+    #     depths = ray_batch[:, 8]
+    #     ret['sigma_loss'] = sigma_loss.calculate_loss(rays_o, rays_d, viewdirs, near, far, depths, network_query_fn,
+    #                                                   network_fine)
 
     for k in ret:
         if jt.isnan(ret[k]).any() or jt.isinf(ret[k]).any():
@@ -696,38 +654,35 @@ def train():
     parser = config_parser()
     args = parser.parse_args()
 
-    render_first_time = True
-    if args.render_pass:
-        render_first_time = False
+    # render_first_time = True
+    # if args.render_pass:
+    #     render_first_time = False
 
     ########################################
     #              Blender                 #
     ########################################
 
-    if args.dataset_type == 'blender':
-        images, poses, render_poses, hwf, i_split = load_blender_data(args.datadir, args.half_res, args.testskip)
-        logger.info('Loaded blender', images.shape, render_poses.shape, hwf, args.datadir)
-        i_train, i_val, i_test = i_split
-        near = 2.
-        far = 6.
+    if args.dataset_type != 'blender':
+        logger.exception('Unknown dataset type', args.dataset_type, 'exiting')
 
-        if args.fewshot > 0:
-            if args.train_scene is None:
-                np.random.seed(args.fewshot_seed)
-                i_train = np.random.choice(i_train, args.fewshot, replace=False)
-            else:
-                i_train = np.array(args.train_scene)
-            logger.info('i_train', i_train)
+    images, poses, render_poses, hwf, i_split = load_blender_data(args.datadir, args.half_res, args.testskip)
+    logger.info('Loaded blender', images.shape, render_poses.shape, hwf, args.datadir)
+    i_train, i_val, i_test = i_split
+    near = 2.
+    far = 6.
 
-        images_mask = images[..., -1]
-        if args.white_bkgd:
-            images = images[..., :3] * images[..., -1:] + (1. - images[..., -1:])
+    if args.fewshot > 0:
+        if args.train_scene is None:
+            np.random.seed(args.fewshot_seed)
+            i_train = np.random.choice(i_train, args.fewshot, replace=False)
         else:
-            images = images[..., :3]
+            i_train = np.array(args.train_scene)
+        logger.info('i_train', i_train)
 
+    if args.white_bkgd:
+        images = images[..., :3] * images[..., -1:] + (1. - images[..., -1:])
     else:
-        logger.info('Unknown dataset type', args.dataset_type, 'exiting')
-        return
+        images = images[..., :3]
 
     # Cast intrinsics to right types
     H, W, focal = hwf
@@ -738,9 +693,6 @@ def train():
         render_poses = np.array(poses[i_test])
     elif args.render_train:
         render_poses = np.array(poses[i_train])
-    elif args.render_mypath:
-        # render_poses = generate_renderpath(np.array(poses[i_test]), focal)
-        render_poses = generate_renderpath(np.array(poses[i_test])[3:4], focal, sc=1)
 
     # Create log dir and copy the config file
     basedir = os.path.relpath(args.basedir)
@@ -810,25 +762,13 @@ def train():
     if args.entropy:
         N_entropy = args.N_entropy
         fun_entropy_loss = EntropyLoss(args)
-        jt.nn.CrossEntropyLoss()
-
-    use_batching = not args.no_batching
-    logger.info('use_batching', use_batching)
-
-    if use_batching:
-        # For random ray batching
-        # TODO
-        raise NotImplementedError
 
     if args.debug:
         return
+
     # Move training data to GPU
     images = jt.array(images)
     poses = jt.array(poses)
-
-    if use_batching:
-        # TODO
-        raise NotImplementedError
 
     N_iters = args.N_iters + 1
     logger.info('Begin')
@@ -836,8 +776,6 @@ def train():
     logger.info('TEST views are', i_test)
     logger.info('VAL views are', i_val)
 
-    # Summary writers
-    # writer = SummaryWriter(os.path.join(basedir, 'summaries', expname))
     tags = []
     if (not args.debug) and args.wandb:
         wandb.init(project='entropy_nerf', group=args.wandb_group, config=args, name=args.expname, tags=tags)
@@ -847,48 +785,42 @@ def train():
     if args.eval_only:
         N_iters = start + 2
         i_testset = 1
+
     for i in tqdm(range(start, N_iters)):
         time0 = time.time()
 
         # Sample random ray batch
-        if use_batching:
-            # Random over all images
-            # TODO
-            raise NotImplementedError
+        # Random from one image
+        img_i = np.random.choice(i_train)
+        target = images[img_i]
 
-        else:
-            # Random from one image
-            img_i = np.random.choice(i_train)
-            target = images[img_i]
+        rgb_pose = poses[img_i, :3, :4]
 
-            rgb_pose = poses[img_i, :3, :4]
+        if args.N_rand is not None:
+            rays_o, rays_d = get_rays(H, W, focal, jt.array(rgb_pose))  # (H, W, 3), (H, W, 3)
 
-            if args.N_rand is not None:
-                rays_o, rays_d = get_rays(H, W, focal, jt.array(rgb_pose))  # (H, W, 3), (H, W, 3)
+            if i < args.precrop_iters:
+                dH = int(H // 2 * args.precrop_frac)
+                dW = int(W // 2 * args.precrop_frac)
+                coords = jt.stack(
+                    jt.meshgrid(
+                        jt.linspace(H // 2 - dH, H // 2 + dH - 1, 2 * dH),
+                        jt.linspace(W // 2 - dW, W // 2 + dW - 1, 2 * dW)
+                    ), -1)
+                if i == start:
+                    logger.info(
+                        f"[Config] Center cropping of size {2 * dH} x {2 * dW} is enabled until iter {args.precrop_iters}")
+            else:
+                coords = jt.stack(jt.meshgrid(jt.linspace(0, H - 1, H), jt.linspace(0, W - 1, W)),
+                                  -1)  # (H, W, 2)
 
-                if i < args.precrop_iters:
-                    dH = int(H // 2 * args.precrop_frac)
-                    dW = int(W // 2 * args.precrop_frac)
-                    coords = jt.stack(
-                        jt.meshgrid(
-                            jt.linspace(H // 2 - dH, H // 2 + dH - 1, 2 * dH),
-                            jt.linspace(W // 2 - dW, W // 2 + dW - 1, 2 * dW)
-                        ), -1)
-                    if i == start:
-                        logger.info(
-                            f"[Config] Center cropping of size {2 * dH} x {2 * dW} is enabled until iter {args.precrop_iters}")
-                else:
-                    coords = jt.stack(jt.meshgrid(jt.linspace(0, H - 1, H), jt.linspace(0, W - 1, W)),
-                                      -1)  # (H, W, 2)
-
-                coords = jt.reshape(coords, [-1, 2])  # (H * W, 2)
-                select_inds = np.random.choice(coords.shape[0], size=[N_rgb], replace=False)  # (N_rand,)
-                select_coords = coords[select_inds].long()  # (N_rand, 2)
-                rays_o = rays_o[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
-                rays_d = rays_d[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
-                batch_rays = jt.stack([rays_o, rays_d], 0)  # (2, N_rand, 3)
-                target_s = target[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
-
+            coords = jt.reshape(coords, [-1, 2])  # (H * W, 2)
+            select_inds = np.random.choice(coords.shape[0], size=[N_rgb], replace=False)  # (N_rand,)
+            select_coords = coords[select_inds].long()  # (N_rand, 2)
+            rays_o = rays_o[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
+            rays_d = rays_d[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
+            batch_rays = jt.stack([rays_o, rays_d], 0)  # (2, N_rand, 3)
+            target_s = target[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
 
             ########################################################
             #            Sampling for unseen rays                  #
@@ -954,11 +886,11 @@ def train():
         disp = disp[:N_rgb]
         acc = acc[:N_rgb]
 
-        optimizer.zero_grad()
+        # FIXME
+        # optimizer.zero_grad()
         img_loss = img2mse(rgb, target_s)
         logging_info = {'rgb_loss': img_loss}
         entropy_ray_zvals_loss = 0
-        smoothing_loss = 0
 
         ########################################################
         #            Ray Entropy Minimiation Loss              #
@@ -976,12 +908,9 @@ def train():
         #           Infomation Gain Reduction Loss             #
         ########################################################
 
-        smoothing_lambda = args.smoothing_lambda * args.smoothing_rate ** (int(i / args.smoothing_step_size))
-
         trans = extras['raw'][..., -1]
         loss = img_loss \
-               + args.entropy_ray_zvals_lambda * entropy_ray_zvals_loss \
-               + smoothing_lambda * smoothing_loss
+               + args.entropy_ray_zvals_lambda * entropy_ray_zvals_loss
         psnr = mse2psnr(img_loss)
         logging_info['psnr'] = psnr
 

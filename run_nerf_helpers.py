@@ -13,7 +13,7 @@ from mylogger import logger
 
 # Misc
 img2mse = lambda x, y: jt.mean((x - y) ** 2)
-mse2psnr = lambda x: -10. * jt.log(x) / jt.log(jt.array([10.]))
+mse2psnr = lambda x: -10. * jt.log(x) / jt.log(jt.array([10.], dtype=jt.float32))
 to8b = lambda x: (255 * np.clip(x, 0, 1)).astype(np.uint8)
 
 
@@ -141,7 +141,7 @@ def ndc_rays(H: int, W: int, focal: float, near, rays_o, rays_d):
 def sample_pdf(bins, weights, N_samples, det=False, pytest=False):
     # Get pdf
     weights = weights + 1e-5  # prevent nans
-    pdf = weights / jt.sum(weights, -1, keepdims=True)
+    pdf = weights / jt.sum(weights, dim=-1, keepdims=True)
     cdf = jt.cumsum(pdf, -1)
     cdf = jt.concat([jt.zeros_like(cdf[..., :1]), cdf], -1)  # (batch, len(bins))
 
@@ -152,16 +152,16 @@ def sample_pdf(bins, weights, N_samples, det=False, pytest=False):
     else:
         u = jt.rand(list(cdf.shape[:-1]) + [N_samples])
 
-    # Pytest, overwrite u with numpy's fixed random numbersd
-    if pytest:
-        np.random.seed(0)
-        new_shape = list(cdf.shape[:-1]) + [N_samples]
-        if det:
-            u = np.linspace(0., 1., N_samples)
-            u = np.broadcast_to(u, new_shape)
-        else:
-            u = np.random.rand(*new_shape)
-        u = jt.array(u)
+    # # Pytest, overwrite u with numpy's fixed random numbersd
+    # if pytest:
+    #     np.random.seed(0)
+    #     new_shape = list(cdf.shape[:-1]) + [N_samples]
+    #     if det:
+    #         u = np.linspace(0., 1., N_samples)
+    #         u = np.broadcast_to(u, new_shape)
+    #     else:
+    #         u = np.random.rand(*new_shape)
+    #     u = jt.array(u)
 
     # Invert CDF
     u = u.contiguous()
@@ -207,14 +207,14 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
 
     rgb = jt.sigmoid(raw[..., :3])  # [N_rays, N_samples, 3]
     noise = 0.
-    if raw_noise_std > 0.:
-        noise = jt.randn(raw[..., 3].shape) * raw_noise_std
-
-        # Overwrite randomly sampled data if pytest
-        if pytest:
-            np.random.seed(0)
-            noise = np.random.rand(*list(raw[..., 3].shape)) * raw_noise_std
-            noise = jt.array(noise)
+    # if raw_noise_std > 0.:
+    #     noise = jt.randn(raw[..., 3].shape) * raw_noise_std
+    #
+    #     # Overwrite randomly sampled data if pytest
+    #     if pytest:
+    #         np.random.seed(0)
+    #         noise = np.random.rand(*list(raw[..., 3].shape)) * raw_noise_std
+    #         noise = jt.array(noise)
 
     alpha = raw2alpha(raw[..., 3] + noise, dists)  # [N_rays, N_samples]
     sigma = jt.nn.relu(raw[..., 3] + noise)
@@ -223,8 +223,7 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
     rgb_map = jt.sum(weights[..., None] * rgb, -2)  # [N_rays, 3]
 
     depth_map = jt.sum(weights * z_vals, -1)
-
-    disp_map = 1. / jt.maximum(1e-10 * jt.ones_like(depth_map), depth_map / jt.sum(weights, -1))
+    disp_map = 1. / jt.maximum(jt.float32(1e-10) * jt.ones_like(depth_map), depth_map / jt.sum(weights, -1))
     acc_map = jt.sum(weights, -1)
 
     if white_bkgd:
@@ -240,27 +239,3 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
             others['dists'] = dists
         return rgb_map, disp_map, acc_map, weights, depth_map, others
     return rgb_map, disp_map, acc_map, weights, depth_map
-
-
-def sample_sigma(rays_o, rays_d, viewdirs, network, z_vals, network_query):
-    # N_rays = rays_o.shape[0]
-    # N_samples = len(z_vals)
-    # z_vals = z_vals.expand([N_rays, N_samples])
-
-    pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]  # [N_rays, N_samples, 3]
-    raw = network_query(pts, viewdirs, network)
-
-    rgb = jt.sigmoid(raw[..., :3])  # [N_rays, N_samples, 3]
-    sigma = jt.nn.relu(raw[..., 3])
-
-    rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d)
-
-    return rgb, sigma, depth_map
-
-
-def visualize_sigma(sigma, z_vals, filename):
-    plt.plot(z_vals, sigma)
-    plt.xlabel('z_vals')
-    plt.ylabel('sigma')
-    plt.savefig(filename)
-    return
