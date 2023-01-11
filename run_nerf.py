@@ -7,7 +7,6 @@ import jittor as jt
 import numpy as np
 from tqdm import tqdm
 import random
-import wandb
 
 from mylogger import logger
 
@@ -620,9 +619,9 @@ def config_parser():
                         help='frequency of console printout and metric loggin')
     parser.add_argument("--i_img", type=int, default=500,
                         help='frequency of tensorboard image logging')
-    parser.add_argument("--i_weights", type=int, default=1000,
+    parser.add_argument("--i_weights", type=int, default=500,
                         help='frequency of weight ckpt saving')
-    parser.add_argument("--i_testset", type=int, default=1000,
+    parser.add_argument("--i_testset", type=int, default=500,
                         help='frequency of testset saving')
     parser.add_argument("--i_video", type=int, default=1000,
                         help='frequency of render_poses video saving')
@@ -776,10 +775,6 @@ def train():
     logger.info('TEST views are', i_test)
     logger.info('VAL views are', i_val)
 
-    tags = []
-    if (not args.debug) and args.wandb:
-        wandb.init(project='entropy_nerf', group=args.wandb_group, config=args, name=args.expname, tags=tags)
-
     start = start + 1
 
     if args.eval_only:
@@ -912,18 +907,17 @@ def train():
         loss = img_loss \
                + args.entropy_ray_zvals_lambda * entropy_ray_zvals_loss
         psnr = mse2psnr(img_loss)
-        logging_info['psnr'] = psnr
+        logging_info['psnr'] = psnr.item()
 
         if 'rgb0' in extras and not args.no_coarse:
             img_loss0 = img2mse(extras['rgb0'], target_s)
             loss = loss + img_loss0
             psnr0 = mse2psnr(img_loss0)
-            logging_info['rgb0_loss'] = img_loss0
-            logging_info['psnr0'] = psnr0
+            logging_info['rgb0_loss'] = img_loss0.item()
+            logging_info['psnr0'] = psnr0.item()
 
-        if args.wandb:
-            if i % args.i_wandb == 0:
-                wandb.log(logging_info, step=i)
+        if i % args.i_wandb == 0:
+            logger.debug(f'[Extra] Iter {i:06d}:', logging_info)
 
         optimizer.step(loss)
 
@@ -980,14 +974,14 @@ def train():
 
             test_ssim, test_msssim = img2ssim(jt.array(rgbs), images[i_test])
 
-            if args.wandb:
-                wandb.log({'test_psnr': test_psnr,
-                           'test_psnr_re': test_redefine_psnr,
-                           'test_ssim': test_ssim
-                           }, step=i)
+            logger.info(f'[Test] Iter {i:06d}:',
+                        {'test_psnr': test_psnr,
+                         'test_psnr_re': test_redefine_psnr,
+                         'test_ssim': test_ssim
+                         })
 
         if i % args.i_print == 0:
-            logger.info(f"[TRAIN] Iter: {i} Loss: {loss.item()}  PSNR: {psnr.item()}")
+            logger.info(f"[TRAIN] Iter {i:06d}: Loss: {loss.item()}  PSNR: {psnr.item()}")
         global_step += 1
 
 

@@ -81,6 +81,5 @@ def load_blender_data(basedir, half_res=False, testskip=1):
         for i, img in enumerate(imgs):
             imgs_half_res[i] = cv2.resize(img, (W, H), interpolation=cv2.INTER_AREA)
         imgs = imgs_half_res
-        # imgs = tf.image.resize_area(imgs, [400, 400]).numpy()
 
     return imgs, poses, render_poses, [H, W, focal], i_split
