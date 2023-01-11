@@ -479,7 +479,7 @@ def render_rays(ray_batch,
 
     for k in ret:
         if jt.isnan(ret[k]).any() or jt.isinf(ret[k]).any():
-            logger.debug('[Numerical Error] {} contains nan or inf.'.format(k))
+            logger.debug(f'[Numerical Error] {k} contains nan or inf.', '\n', ret[k])
     return ret
 
 
@@ -673,11 +673,11 @@ def config_parser():
                         help='frequency of console printout and metric loggin')
     parser.add_argument("--i_img", type=int, default=500,
                         help='frequency of tensorboard image logging')
-    parser.add_argument("--i_weights", type=int, default=10000,
+    parser.add_argument("--i_weights", type=int, default=1000,
                         help='frequency of weight ckpt saving')
-    parser.add_argument("--i_testset", type=int, default=50000,
+    parser.add_argument("--i_testset", type=int, default=1000,
                         help='frequency of testset saving')
-    parser.add_argument("--i_video", type=int, default=50000,
+    parser.add_argument("--i_video", type=int, default=1000,
                         help='frequency of render_poses video saving')
     parser.add_argument("--wandb", action='store_true')
     parser.add_argument("--i_wandb", type=int, default=100,
@@ -832,29 +832,8 @@ def train():
 
     if use_batching:
         # For random ray batching
-        logger.info('get rays')
-        rays = np.stack([get_rays_np(H, W, focal, p) for p in poses[:, :3, :4]], 0)  # [N, ro+rd, H, W, 3]
-        if args.debug:
-            logger.info('rays.shape:', rays.shape)
-        logger.info('done, concats')
-        rays_rgb = np.concatenate([rays, images[:, None]], 1)  # [N, ro+rd+rgb, H, W, 3]
-        if args.debug:
-            logger.info('rays_rgb.shape:', rays_rgb.shape)
-        rays_all = np.transpose(rays_rgb, [0, 2, 3, 1, 4])  # [N, H, W, ro+rd+rgb, 3]
-        rays_rgb = np.stack([rays_all[i] for i in i_train], 0)  # train images only
-        rays_rgb = np.reshape(rays_rgb, [-1, 3, 3])  # [(N-1)*H*W, ro+rd+rgb, 3]
-        rays_rgb = rays_rgb.astype(np.float32)
-        logger.info('shuffle rays')
-        np.random.shuffle(rays_rgb)
-
-        rays_depth = None
-        rays_entropy = None
-
-        if args.entropy:
-            rays_entropy = np.stack(rays_all, 0)  # train images only
-            rays_entropy = np.reshape(rays_entropy, [-1, 3, 3])  # [(N-1)*H*W, ro+rd+rgb, 3]
-            rays_entropy = rays_entropy.astype(np.float32)
-            np.random.shuffle(rays_entropy)
+        # TODO
+        raise NotImplementedError
 
     if args.debug:
         return
@@ -864,7 +843,7 @@ def train():
 
     if use_batching:
         # TODO
-        pass
+        raise NotImplementedError
 
     N_iters = args.N_iters + 1
     logger.info('Begin')
@@ -890,7 +869,7 @@ def train():
         if use_batching:
             # Random over all images
             # TODO
-            pass
+            raise NotImplementedError
 
         else:
             # Random from one image
@@ -1069,8 +1048,7 @@ def train():
             if i % args.i_wandb == 0:
                 wandb.log(logging_info, step=i)
 
-        loss.backward()
-        optimizer.step()
+        optimizer.step(loss)
 
         # NOTE: IMPORTANT!
         ###   update learning rate   ###
@@ -1095,9 +1073,9 @@ def train():
             }, path)
             logger.info('Saved checkpoints at', path)
 
-        if (args.i_video > 0 and i % args.i_video == 0 and i > 0):
+        if args.i_video > 0 and i % args.i_video == 0 and i > 0:
             # Turn on testing mode
-            if render_first_time == False:
+            if not render_first_time:
                 render_first_time = True
                 continue
             with jt.no_grad():
@@ -1132,12 +1110,12 @@ def train():
                            }, step=i)
 
         if i % args.i_print == 0:
-            tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item()}  PSNR: {psnr.item()}")
+            logger.info(f"[TRAIN] Iter: {i} Loss: {loss.item()}  PSNR: {psnr.item()}")
         global_step += 1
 
 
 if __name__ == '__main__':
-    logger.set_level(logger.DEBUG)
+    logger.set_level(logger.INFO)
 
     # disable multi-GPUs before running because of the bug of Jittor
     jt.flags.use_cuda = jt.has_cuda

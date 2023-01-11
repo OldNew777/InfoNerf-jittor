@@ -37,6 +37,6 @@ def std(x: jt.Var):
     Returns:
         jt.Var: the standard deviation
     """
-    mean = x.mean()
-    var = ((x - mean) ** 2).mean()
+    mean = x.mean(dim=-1, keepdims=True)
+    var = ((x - mean) ** 2).mean(dim=-1, keepdims=True)
     return var.sqrt()
