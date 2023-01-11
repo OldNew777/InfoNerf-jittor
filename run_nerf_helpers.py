@@ -148,7 +148,7 @@ class NeRF(nn.Module):
         else:
             self.output_linear = nn.Linear(W, output_ch)
 
-    def forward(self, x):
+    def execute(self, x):
         input_pts, input_views = jt.split(x, [self.input_ch, self.input_ch_views], dim=-1)
         h = input_pts
         for i, l in enumerate(self.pts_linears):
@@ -236,7 +236,7 @@ class NeRF_RGB(nn.Module):
 
         self.alpha_model = alpha_model
 
-    def forward(self, x):
+    def execute(self, x):
         input_pts, input_views = jt.split(x, [self.input_ch, self.input_ch_views], dim=-1)
         h = input_pts
         for i, l in enumerate(self.pts_linears):
@@ -437,6 +437,7 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
     rgb_map = jt.sum(weights[..., None] * rgb, -2)  # [N_rays, 3]
 
     depth_map = jt.sum(weights * z_vals, -1)
+
     disp_map = 1. / jt.max(1e-10 * jt.ones_like(depth_map), depth_map / jt.sum(weights, -1))
     acc_map = jt.sum(weights, -1)
 

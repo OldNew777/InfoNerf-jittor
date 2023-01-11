@@ -783,7 +783,7 @@ def train():
 
     # Short circuit if only rendering out from trained model
     if args.render_only:
-        print('RENDER ONLY')
+        logger.info('RENDER ONLY')
         with jt.no_grad():
             if args.render_test:
                 # render_test switches to test poses
@@ -802,14 +802,14 @@ def train():
             else:
                 testsavedir = os.path.join(basedir, expname, 'renderonly_{}_{:06d}'.format('path', start))
             os.makedirs(testsavedir, exist_ok=True)
-            print('test poses shape', render_poses.shape)
+            logger.info('test poses shape', render_poses.shape)
 
             rgbs, disps = render_path(render_poses, hwf, args.chunk, render_kwargs_test, gt_imgs=images,
                                       savedir=testsavedir, render_factor=args.render_factor)
-            print('Done rendering', testsavedir)
+            logger.info('Done rendering', testsavedir)
             imageio.mimwrite(os.path.join(testsavedir, 'rgb.mp4'), to8b(rgbs), fps=30, quality=8)
             disps[np.isnan(disps)] = 0
-            print('Depth stats', np.mean(disps), np.max(disps), np.percentile(disps, 95))
+            logger.info('Depth stats', np.mean(disps), np.max(disps), np.percentile(disps, 95))
             imageio.mimwrite(os.path.join(testsavedir, 'disp.mp4'), to8b(disps / np.percentile(disps, 95)), fps=30,
                              quality=8)
             return
@@ -831,19 +831,19 @@ def train():
 
     if use_batching:
         # For random ray batching
-        print('get rays')
+        logger.info('get rays')
         rays = np.stack([get_rays_np(H, W, focal, p) for p in poses[:, :3, :4]], 0)  # [N, ro+rd, H, W, 3]
         if args.debug:
-            print('rays.shape:', rays.shape)
-        print('done, concats')
+            logger.info('rays.shape:', rays.shape)
+        logger.info('done, concats')
         rays_rgb = np.concatenate([rays, images[:, None]], 1)  # [N, ro+rd+rgb, H, W, 3]
         if args.debug:
-            print('rays_rgb.shape:', rays_rgb.shape)
+            logger.info('rays_rgb.shape:', rays_rgb.shape)
         rays_all = np.transpose(rays_rgb, [0, 2, 3, 1, 4])  # [N, H, W, ro+rd+rgb, 3]
         rays_rgb = np.stack([rays_all[i] for i in i_train], 0)  # train images only
         rays_rgb = np.reshape(rays_rgb, [-1, 3, 3])  # [(N-1)*H*W, ro+rd+rgb, 3]
         rays_rgb = rays_rgb.astype(np.float32)
-        print('shuffle rays')
+        logger.info('shuffle rays')
         np.random.shuffle(rays_rgb)
 
         rays_depth = None
@@ -862,19 +862,14 @@ def train():
     poses = jt.array(poses)
 
     if use_batching:
-        # rays_rgb = jt.array(rays_rgb)
-        # rays_depth = jt.array(rays_depth) if rays_depth is not None else None
-        raysRGB_iter = iter(DataLoader(RayDataset(rays_rgb), batch_size=N_rgb, shuffle=True, num_workers=0))
-        raysDepth_iter = iter(DataLoader(RayDataset(rays_depth), batch_size=N_depth, shuffle=True,
-                                         num_workers=0)) if rays_depth is not None else None
-        raysEntropy_iter = iter(DataLoader(RayDataset(rays_entropy), batch_size=N_entropy, shuffle=True,
-                                           num_workers=0)) if rays_entropy is not None else None
+        # TODO
+        pass
 
     N_iters = args.N_iters + 1
-    print('Begin')
-    print('TRAIN views are', i_train)
-    print('TEST views are', i_test)
-    print('VAL views are', i_val)
+    logger.info('Begin')
+    logger.info('TRAIN views are', i_train)
+    logger.info('TEST views are', i_test)
+    logger.info('VAL views are', i_val)
 
     # Summary writers
     # writer = SummaryWriter(os.path.join(basedir, 'summaries', expname))
@@ -893,22 +888,8 @@ def train():
         # Sample random ray batch
         if use_batching:
             # Random over all images
-            try:
-                batch = next(raysRGB_iter)
-            except StopIteration:
-                raysRGB_iter = iter(DataLoader(RayDataset(rays_rgb), batch_size=N_rgb, shuffle=True, num_workers=0))
-                batch = next(raysRGB_iter)
-            batch = jt.transpose(batch, 0, 1)
-            batch_rays, target_s = batch[:2], batch[2]
-
-            if args.entropy and (args.N_entropy != 0):
-                try:
-                    batch_entropy = next(raysEntropy_iter)
-                except StopIteration:
-                    raysEntropy_iter = iter(
-                        DataLoader(RayDataset(rays_entropy), batch_size=N_entropy, shuffle=True, num_workers=0))
-                    batch_entropy = next(raysEntropy_iter)
-                batch_rays_entropy = jt.transpose(batch_entropy, 0, 1)[:2]
+            # TODO
+            pass
 
         else:
             # Random from one image
@@ -929,7 +910,7 @@ def train():
                             jt.linspace(W // 2 - dW, W // 2 + dW - 1, 2 * dW)
                         ), -1)
                     if i == start:
-                        print(
+                        logger.info(
                             f"[Config] Center cropping of size {2 * dH} x {2 * dW} is enabled until iter {args.precrop_iters}")
                 else:
                     coords = jt.stack(jt.meshgrid(jt.linspace(0, H - 1, H), jt.linspace(0, W - 1, W)),
@@ -976,7 +957,7 @@ def train():
                             jt.linspace(W // 2 - dW, W // 2 + dW - 1, 2 * dW)
                         ), -1)
                     if i == start:
-                        print(
+                        logger.info(
                             f"[Config] Center cropping of size {2 * dH} x {2 * dW} is enabled until iter {args.precrop_iters}")
                 else:
                     if args.smooth_sampling_method == 'near_pixel':
@@ -1111,7 +1092,7 @@ def train():
                                                                                                    'network_fine'] is not None else None,
                 'optimizer_state_dict': optimizer.state_dict(),
             }, path)
-            print('Saved checkpoints at', path)
+            logger.info('Saved checkpoints at', path)
 
         if (args.i_video > 0 and i % args.i_video == 0 and i > 0):
             # Turn on testing mode
@@ -1120,7 +1101,7 @@ def train():
                 continue
             with jt.no_grad():
                 rgbs, disps = render_path(render_poses, hwf, args.chunk, render_kwargs_test)
-            print('Done, saving', rgbs.shape, disps.shape)
+            logger.info('Done, saving', rgbs.shape, disps.shape)
             moviebase = os.path.join(basedir, expname, '{}_spiral_{:06d}_'.format(expname.split('/')[-1], i))
             imageio.mimwrite(moviebase + 'rgb.mp4', to8b(rgbs), fps=30, quality=8)
             imageio.mimwrite(moviebase + 'disp.mp4', to8b(disps / np.nanmax(disps)), fps=30, quality=8)
@@ -1128,11 +1109,11 @@ def train():
         if (i % args.i_testset == 0) and (i > 0) and (len(i_test) > 0):
             testsavedir = os.path.join(basedir, expname, 'testset_{:06d}'.format(i))
             os.makedirs(testsavedir, exist_ok=True)
-            print('test poses shape', poses[i_test].shape)
+            logger.info('test poses shape', poses[i_test].shape)
             with jt.no_grad():
                 rgbs, disps = render_path(jt.array(poses[i_test]), hwf, args.chunk, render_kwargs_test,
                                           gt_imgs=images[i_test], savedir=testsavedir)
-            print('Saved test set')
+            logger.info('Saved test set')
 
             filenames = [os.path.join(testsavedir, '{:03d}.png'.format(k)) for k in range(len(i_test))]
 
