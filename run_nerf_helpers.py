@@ -55,8 +55,8 @@ def img2psnr_mask(x, y, mask) -> jt.Var:
 
 def img2ssim(x, y, mask=None) -> Tuple[jt.Var]:
     if mask is not None:
-        x = mask.unsqueeze(-1) * x
-        y = mask.unsqueeze(-1) * y
+        x = jt.unsqueeze(mask, -1) * x
+        y = jt.unsqueeze(mask, -1) * y
 
     x = x.permute(0, 3, 1, 2)
     y = y.permute(0, 3, 1, 2)

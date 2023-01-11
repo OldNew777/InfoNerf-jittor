@@ -18,7 +18,7 @@ def _fspecial_gauss_1d(size: int, sigma: float):
     g = jt.exp(-(coords ** 2) / (2 * sigma ** 2))
     g /= g.sum()
 
-    return g.unsqueeze(0).unsqueeze(0)
+    return jt.unsqueeze(jt.unsqueeze(g, 0), 0)
 
 
 def gaussian_filter(input: jt.Var, win: jt.Var):
