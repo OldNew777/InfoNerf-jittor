@@ -9,6 +9,8 @@ from matplotlib import pyplot as plt
 
 from utils.jittor_msssim import ssim, ms_ssim
 
+from mylogger import logger
+
 # Misc
 img2mse = lambda x, y: jt.mean((x - y) ** 2)
 mse2psnr = lambda x: -10. * jt.log(x) / jt.log(jt.array([10.]))
@@ -355,7 +357,7 @@ def ndc_rays(H: int, W: int, focal: float, near, rays_o, rays_d):
 def sample_pdf(bins, weights, N_samples, det=False, pytest=False):
     # Get pdf
     weights = weights + 1e-5  # prevent nans
-    pdf = weights / jt.sum(weights, -1, keepdim=True)
+    pdf = weights / jt.sum(weights, -1, keepdims=True)
     cdf = jt.cumsum(pdf, -1)
     cdf = jt.concat([jt.zeros_like(cdf[..., :1]), cdf], -1)  # (batch, len(bins))
 
@@ -380,8 +382,8 @@ def sample_pdf(bins, weights, N_samples, det=False, pytest=False):
     # Invert CDF
     u = u.contiguous()
     inds = searchsorted(cdf, u, right=True)
-    below = jt.max(jt.zeros_like(inds - 1), inds - 1)
-    above = jt.min((cdf.shape[-1] - 1) * jt.ones_like(inds), inds)
+    below = jt.maximum(jt.zeros_like(inds - 1), inds - 1)
+    above = jt.minimum((cdf.shape[-1] - 1) * jt.ones_like(inds), inds)
     inds_g = jt.stack([below, above], -1)  # (batch, N_samples, 2)
 
     # cdf_g = tf.gather(cdf, inds_g, axis=-1, batch_dims=len(inds_g.shape)-2)
@@ -438,7 +440,7 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
 
     depth_map = jt.sum(weights * z_vals, -1)
 
-    disp_map = 1. / jt.max(1e-10 * jt.ones_like(depth_map), depth_map / jt.sum(weights, -1))
+    disp_map = 1. / jt.maximum(1e-10 * jt.ones_like(depth_map), depth_map / jt.sum(weights, -1))
     acc_map = jt.sum(weights, -1)
 
     if white_bkgd:

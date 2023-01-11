@@ -5,7 +5,7 @@ import time
 import imageio
 import jittor as jt
 import numpy as np
-from tqdm import tqdm, trange
+from tqdm import tqdm
 import random
 import wandb
 
@@ -109,7 +109,7 @@ def render(H, W, focal, chunk=1024 * 32, rays=None, c2w=None, ndc=True,
         if c2w_staticcam is not None:
             # special case to visualize effect of viewdirs
             rays_o, rays_d = get_rays(H, W, focal, c2w_staticcam)
-        viewdirs = viewdirs / jt.norm(viewdirs, dim=-1, keepdim=True)
+        viewdirs = viewdirs / jt.norm(viewdirs, dim=-1, keepdims=True)
         viewdirs = jt.reshape(viewdirs, [-1, 3]).float()
 
     sh = rays_d.shape  # [..., 3]
@@ -196,7 +196,7 @@ def render_test_ray(rays_o, rays_d, hwf, ndc, near, far, use_viewdirs, N_samples
     if use_viewdirs:
         # provide ray directions as input
         viewdirs = rays_d
-        viewdirs = viewdirs / jt.norm(viewdirs, dim=-1, keepdim=True)
+        viewdirs = viewdirs / jt.norm(viewdirs, dim=-1, keepdims=True)
         viewdirs = jt.reshape(viewdirs, [-1, 3]).float()
 
     if ndc:
@@ -702,6 +702,7 @@ def config_parser():
     return parser
 
 
+@log_exception
 def train():
     parser = config_parser()
     args = parser.parse_args()
@@ -882,7 +883,7 @@ def train():
     if args.eval_only:
         N_iters = start + 2
         i_testset = 1
-    for i in trange(start, N_iters):
+    for i in tqdm(range(start, N_iters)):
         time0 = time.time()
 
         # Sample random ray batch
@@ -1136,7 +1137,7 @@ def train():
 
 
 if __name__ == '__main__':
-    logger.set_level(logger.INFO)
+    logger.set_level(logger.DEBUG)
 
     # disable multi-GPUs before running because of the bug of Jittor
     jt.flags.use_cuda = jt.has_cuda

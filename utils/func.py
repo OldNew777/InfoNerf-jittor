@@ -15,6 +15,16 @@ def time_it(func):
     return wrapper
 
 
+def log_exception(func):
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            logger.exception(e)
+            raise e
+    return wrapper
+
+
 def std(x: jt.Var):
     r"""Compute the standard deviation along the specified dimension.
 
