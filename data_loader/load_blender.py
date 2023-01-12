@@ -5,31 +5,34 @@ import json
 import jittor as jt
 import cv2
 
+# translate t
 trans_t = lambda t: jt.array([
     [1, 0, 0, 0],
     [0, 1, 0, 0],
     [0, 0, 1, t],
     [0, 0, 0, 1]]).float32()
 
+# rotate phi
 rot_phi = lambda phi: jt.array([
     [1, 0, 0, 0],
     [0, np.cos(phi), -np.sin(phi), 0],
     [0, np.sin(phi), np.cos(phi), 0],
     [0, 0, 0, 1]]).float32()
 
-rot_theta = lambda th: jt.array([
-    [np.cos(th), 0, -np.sin(th), 0],
+# rotate theta
+rot_theta = lambda theta: jt.array([
+    [np.cos(theta), 0, -np.sin(theta), 0],
     [0, 1, 0, 0],
-    [np.sin(th), 0, np.cos(th), 0],
+    [np.sin(theta), 0, np.cos(theta), 0],
     [0, 0, 0, 1]]).float32()
 
 
 def pose_spherical(theta, phi, radius):
-    c2w = trans_t(radius)
-    c2w = rot_phi(phi / 180. * np.pi) @ c2w
-    c2w = rot_theta(theta / 180. * np.pi) @ c2w
-    c2w = jt.array(np.array([[-1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [0, 0, 0, 1]])) @ c2w
-    return c2w
+    camera2world = trans_t(radius)
+    camera2world = rot_phi(phi / 180. * np.pi) @ camera2world
+    camera2world = rot_theta(theta / 180. * np.pi) @ camera2world
+    camera2world = jt.array(np.array([[-1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [0, 0, 0, 1]])) @ camera2world
+    return camera2world
 
 
 def load_blender_data(basedir, half_res=False, testskip=1):
@@ -66,20 +69,20 @@ def load_blender_data(basedir, half_res=False, testskip=1):
     imgs = np.concatenate(all_imgs, 0)
     poses = np.concatenate(all_poses, 0)
 
-    H, W = imgs[0].shape[:2]
+    height, width = imgs[0].shape[:2]
     camera_angle_x = float(meta['camera_angle_x'])
-    focal = .5 * W / np.tan(.5 * camera_angle_x)
+    focal = .5 * width / np.tan(.5 * camera_angle_x)
 
     render_poses = jt.stack([pose_spherical(angle, -30.0, 4.0) for angle in np.linspace(-180, 180, 40 + 1)[:-1]], 0)
 
     if half_res:
-        H = H // 2
-        W = W // 2
+        height = height // 2
+        width = width // 2
         focal = focal / 2.
 
-        imgs_half_res = np.zeros((imgs.shape[0], H, W, 4))
+        imgs_half_res = np.zeros((imgs.shape[0], height, width, 4))
         for i, img in enumerate(imgs):
-            imgs_half_res[i] = cv2.resize(img, (W, H), interpolation=cv2.INTER_AREA)
+            imgs_half_res[i] = cv2.resize(img, (width, height), interpolation=cv2.INTER_AREA)
         imgs = imgs_half_res
 
-    return imgs, poses, render_poses, [H, W, focal], i_split
+    return imgs, poses, render_poses, [height, width, focal], i_split

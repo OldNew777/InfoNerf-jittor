@@ -99,21 +99,21 @@ def get_embedder(multires, i=0):
 
 
 # Ray helpers
-def get_rays(H: int, W: int, focal: float, c2w, padding=None) -> Tuple[jt.Var, jt.Var]:
+def get_rays(height: int, width: int, focal: float, camera2world: jt.Var, padding=None) -> Tuple[jt.Var, jt.Var]:
     # pyjt's meshgrid has indexing='ij'
     if padding is not None:
-        i, j = jt.meshgrid(jt.linspace(-padding, W - 1 + padding, W + 2 * padding),
-                           jt.linspace(-padding, H - 1 + padding, H + 2 * padding))
+        i, j = jt.meshgrid(jt.linspace(-padding, width - 1 + padding, width + 2 * padding),
+                           jt.linspace(-padding, height - 1 + padding, height + 2 * padding))
     else:
-        i, j = jt.meshgrid(jt.linspace(0, W - 1, W), jt.linspace(0, H - 1, H))
+        i, j = jt.meshgrid(jt.linspace(0, width - 1, width), jt.linspace(0, height - 1, height))
     i = i.t()
     j = j.t()
-    dirs = jt.stack([(i - W * .5) / focal, -(j - H * .5) / focal, -jt.ones_like(i)], -1)
+    dirs = jt.stack([(i - width * .5) / focal, -(j - height * .5) / focal, -jt.ones_like(i)], -1)
     # Rotate ray directions from camera frame to the world frame
-    rays_d = jt.sum(dirs[..., np.newaxis, :] * c2w[:3, :3],
-                    -1)  # dot product, equals to: [c2w.dot(dir) for dir in dirs]
+    rays_d = jt.sum(dirs[..., np.newaxis, :] * camera2world[:3, :3],
+                    -1)  # dot product, equals to: [camera2world.dot(dir) for dir in dirs]
     # Translate camera frame's origin to the world frame. It is the origin of all rays.
-    rays_o = c2w[:3, -1].expand(rays_d.shape)
+    rays_o = camera2world[:3, -1].expand(rays_d.shape)
     return rays_o, rays_d
 
 
@@ -138,7 +138,7 @@ def ndc_rays(H: int, W: int, focal: float, near, rays_o, rays_d):
 
 
 # Hierarchical sampling (section 5.2)
-def sample_pdf(bins, weights, N_samples, det=False, pytest=False):
+def sample_pdf(bins, weights, N_samples, det=False):
     # Get pdf
     weights = weights + 1e-5  # prevent nans
     pdf = weights / jt.sum(weights, dim=-1, keepdims=True)
@@ -151,17 +151,6 @@ def sample_pdf(bins, weights, N_samples, det=False, pytest=False):
         u = u.expand(list(cdf.shape[:-1]) + [N_samples])
     else:
         u = jt.rand(list(cdf.shape[:-1]) + [N_samples])
-
-    # # Pytest, overwrite u with numpy's fixed random numbersd
-    # if pytest:
-    #     np.random.seed(0)
-    #     new_shape = list(cdf.shape[:-1]) + [N_samples]
-    #     if det:
-    #         u = np.linspace(0., 1., N_samples)
-    #         u = np.broadcast_to(u, new_shape)
-    #     else:
-    #         u = np.random.rand(*new_shape)
-    #     u = jt.array(u)
 
     # Invert CDF
     u = u.contiguous()
@@ -184,7 +173,7 @@ def sample_pdf(bins, weights, N_samples, det=False, pytest=False):
     return samples
 
 
-def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=False,
+def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False,
                 out_alpha=False, out_sigma=False, out_dist=False):
     """Transforms model's predictions to semantically meaningful values.
     Args:
@@ -209,12 +198,6 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
     noise = 0.
     # if raw_noise_std > 0.:
     #     noise = jt.randn(raw[..., 3].shape) * raw_noise_std
-    #
-    #     # Overwrite randomly sampled data if pytest
-    #     if pytest:
-    #         np.random.seed(0)
-    #         noise = np.random.rand(*list(raw[..., 3].shape)) * raw_noise_std
-    #         noise = jt.array(noise)
 
     alpha = raw2alpha(raw[..., 3] + noise, dists)  # [N_rays, N_samples]
     sigma = jt.nn.relu(raw[..., 3] + noise)

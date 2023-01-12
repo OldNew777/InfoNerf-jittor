@@ -15,8 +15,8 @@ N_importance = 128
 N_rand = 1024
 N_iters = 50002
 
-i_video=1000000
-i_testset=25000
+i_video=50000
+i_testset=50000
 
 # Entropy
 entropy = True
@@ -25,8 +25,8 @@ entropy_ray_zvals_lambda = 0.001
 precrop_iters = 500
 precrop_frac = 0.5
 no_batching = True
-wandb = False
-i_wandb = 10
+wandb = True
+i_wandb = 100
 
 half_res = False
 fewshot = 4
