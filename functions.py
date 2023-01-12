@@ -46,58 +46,6 @@ def img2ssim(x, y, mask=None) -> Tuple[jt.Var, jt.Var]:
     return ssim_, ms_ssim_
 
 
-# Positional encoding (section 5.1)
-class Embedder:
-    def __init__(self, **kwargs):
-        self.kwargs = kwargs
-        self.create_embedding_fn()
-
-    def create_embedding_fn(self) -> None:
-        embed_fns = []
-        d = self.kwargs['input_dims']
-        out_dim = 0
-        if self.kwargs['include_input']:
-            embed_fns.append(lambda x: x)
-            out_dim += d
-
-        max_freq = self.kwargs['max_freq_log2']
-        N_freqs = self.kwargs['num_freqs']
-
-        if self.kwargs['log_sampling']:
-            freq_bands = 2. ** jt.linspace(0., max_freq, steps=N_freqs)
-        else:
-            freq_bands = jt.linspace(2. ** 0., 2. ** max_freq, steps=N_freqs)
-
-        for freq in freq_bands:
-            for p_fn in self.kwargs['periodic_fns']:
-                embed_fns.append(lambda x, p_fn=p_fn, freq=freq: p_fn(x * freq))
-                out_dim += d
-
-        self.embed_fns = embed_fns
-        self.out_dim = out_dim
-
-    def embed(self, inputs) -> jt.Var:
-        return jt.concat([fn(inputs) for fn in self.embed_fns], -1)
-
-
-def get_embedder(multires, i=0):
-    if i == -1:
-        return nn.Identity(), 3
-
-    embed_kwargs = {
-        'include_input': True,
-        'input_dims': 3,
-        'max_freq_log2': multires - 1,
-        'num_freqs': multires,
-        'log_sampling': True,
-        'periodic_fns': [jt.sin, jt.cos],
-    }
-
-    embedder_obj = Embedder(**embed_kwargs)
-    embed = lambda x, eo=embedder_obj: eo.embed(x)
-    return embed, embedder_obj.out_dim
-
-
 # Ray helpers
 def get_rays(height: int, width: int, focal: float, camera2world: jt.Var, padding=None) -> Tuple[jt.Var, jt.Var]:
     # pyjt's meshgrid has indexing='ij'
@@ -117,27 +65,10 @@ def get_rays(height: int, width: int, focal: float, camera2world: jt.Var, paddin
     return rays_o, rays_d
 
 
-def ndc_rays(H: int, W: int, focal: float, near, rays_o, rays_d):
-    # Shift ray origins to near plane
-    t = -(near + rays_o[..., 2]) / rays_d[..., 2]
-    rays_o = rays_o + t[..., None] * rays_d
-
-    # Projection
-    o0 = -1. / (W / (2. * focal)) * rays_o[..., 0] / rays_o[..., 2]
-    o1 = -1. / (H / (2. * focal)) * rays_o[..., 1] / rays_o[..., 2]
-    o2 = 1. + 2. * near / rays_o[..., 2]
-
-    d0 = -1. / (W / (2. * focal)) * (rays_d[..., 0] / rays_d[..., 2] - rays_o[..., 0] / rays_o[..., 2])
-    d1 = -1. / (H / (2. * focal)) * (rays_d[..., 1] / rays_d[..., 2] - rays_o[..., 1] / rays_o[..., 2])
-    d2 = -2. * near / rays_o[..., 2]
-
-    rays_o = jt.stack([o0, o1, o2], -1)
-    rays_d = jt.stack([d0, d1, d2], -1)
-
-    return rays_o, rays_d
-
-
 # Hierarchical sampling (section 5.2)
+# 提高 voxel 渲染效率
+# 由粗到细的结构来训练
+# 首先采样一组位置信息，基于 stratied sampling，然后训练一个“粗”网络。在此基础上，再训练一个"细"网络
 def sample_pdf(bins, weights, N_samples, det=False):
     # Get pdf
     weights = weights + 1e-5  # prevent nans
@@ -173,6 +104,7 @@ def sample_pdf(bins, weights, N_samples, det=False):
     return samples
 
 
+# 从 raw 数据得到体渲染结果
 def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False,
                 out_alpha=False, out_sigma=False, out_dist=False):
     """Transforms model's predictions to semantically meaningful values.

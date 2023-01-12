@@ -114,9 +114,6 @@ def render(height: float, width: float, focal: float, chunk: int = 1024 * 32, ra
         viewdirs = jt.reshape(viewdirs, [-1, 3]).float()
 
     sh = rays_d.shape  # [..., 3]
-    # if ndc:
-    #     # for forward facing scenes
-    #     rays_o, rays_d = ndc_rays(H, W, focal, 1., rays_o, rays_d)
 
     # Create ray batch
     rays_o = jt.reshape(rays_o, [-1, 3]).float()
@@ -134,6 +131,7 @@ def render(height: float, width: float, focal: float, chunk: int = 1024 * 32, ra
         k_sh = list(sh[:-1]) + list(all_ret[k].shape[1:])
         all_ret[k] = jt.reshape(all_ret[k], k_sh)
 
+    # return rgb/disp/depth/... information of the rendered scene
     k_extract = ['rgb_map', 'disp_map', 'acc_map', 'depth_map']
     ret_list = [all_ret[k] for k in k_extract]
     ret_dict = {k: all_ret[k] for k in all_ret if k not in k_extract}
@@ -152,7 +150,6 @@ def render_path(render_poses, hwf, chunk, render_kwargs,
 
     rgbs = []
     disps = []
-    psnrs = []
     accs = []
     # different camera2world matrix = different pose
     for i, camera2world in enumerate(tqdm(render_poses)):
@@ -190,8 +187,14 @@ def create_nerf(args):
     """
     Instantiate NeRF's MLP model.
     """
+
+    # positional encoding
+    # position
+    # 3 * (1 + multires) channels output
     embed_fn, input_ch = get_embedder(args.multires, args.i_embed)
 
+    # direction
+    # 2 * (1 + multires_views) channels output
     input_ch_views = 0
     embeddirs_fn = None
     if args.use_viewdirs:
@@ -227,19 +230,19 @@ def create_nerf(args):
 
     # Load checkpoints
     if args.ft_path is not None and args.ft_path != 'None':
-        ckpts = [args.ft_path]
+        checkpoints = [args.ft_path]
     else:
-        ckpts = [os.path.join(basedir, expname, f) for f in sorted(os.listdir(os.path.join(basedir, expname))) if
-                 'tar' in f]
+        checkpoints = [os.path.join(basedir, expname, f) for f in sorted(os.listdir(os.path.join(basedir, expname))) if
+                       'tar' in f]
 
-    logger.info('Found ckpts', ckpts)
-    if len(ckpts) > 0 and not args.no_reload:
-        ckpt_path = ckpts[-1]
+    logger.info('Found checkpoints', checkpoints)
+    if len(checkpoints) > 0 and not args.no_reload:
+        checkpoint_path = checkpoints[-1]
         if args.ckpt_render_iter is not None:
-            ckpt_path = os.path.join(os.path.join(basedir, expname, f'{args.ckpt_render_iter:06d}.tar'))
+            checkpoint_path = os.path.join(os.path.join(basedir, expname, f'{args.ckpt_render_iter:06d}.tar'))
 
-        logger.info('Reloading from', ckpt_path)
-        ckpt = jt.load(ckpt_path)
+        logger.info('Reloading from', checkpoint_path)
+        ckpt = jt.load(checkpoint_path)
 
         start = ckpt['global_step']
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
@@ -328,11 +331,13 @@ def render_rays(ray_batch: jt.Var,
     bounds = jt.reshape(ray_batch[..., 6:8], [-1, 1, 2])
     near, far = bounds[..., 0], bounds[..., 1]  # [-1,1]
 
-    t_vals = jt.linspace(0., 1., steps=N_samples)       # [0, 1] as [near, far]
-    z_vals = near * (1. - t_vals) + far * (t_vals)      # points in [near, far]
+    # get N_sample points averaged over the ray
+    t_vals = jt.linspace(0., 1., steps=N_samples)  # [0, 1] as [near, far]
+    z_vals = near * (1. - t_vals) + far * (t_vals)  # points in [near, far]
 
     z_vals = z_vals.expand([N_rays, N_samples])
 
+    # get random points between every two points
     if perturb > 0.:
         # get intervals between samples
         mids = .5 * (z_vals[..., 1:] + z_vals[..., :-1])
@@ -345,23 +350,27 @@ def render_rays(ray_batch: jt.Var,
 
     pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]  # [N_rays, N_samples, 3]
 
+    # forwarding
+    # we don't use model.train() here, because there is not dropout-layer in the model
     if network_fn is not None:
         network_query_fn_use = network_fn
     else:
         network_query_fn_use = network_fine.alpha_model if network_fine.alpha_model is not None else network_fine
 
     raw = network_query_fn(pts, viewdirs, network_query_fn_use)
+    # get VPT rendering results from raw data
     rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd)
 
+    # Hierarchical sampling
     if N_importance > 0:
-
         rgb_map_0, disp_map_0, acc_map_0 = rgb_map, disp_map, acc_map
 
+        # resampling points in the ray
         z_vals_mid = .5 * (z_vals[..., 1:] + z_vals[..., :-1])
         z_samples = sample_pdf(z_vals_mid, weights[..., 1:-1], N_importance, det=(perturb == 0.))
         z_samples = z_samples.detach()
 
-        _, z_vals = jt.argsort(jt.concat([z_vals, z_samples], -1), -1)      # sorted_index, sorted_value
+        _, z_vals = jt.argsort(jt.concat([z_vals, z_samples], -1), -1)  # sorted_index, sorted_value
         pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :,
                                                             None]  # [N_rays, N_samples + N_importance, 3]
 
@@ -392,12 +401,6 @@ def render_rays(ray_batch: jt.Var,
         ret['rgb0'] = rgb_map_0
         ret['disp0'] = disp_map_0
         ret['acc0'] = acc_map_0
-        # ret['z_std'] = std(z_samples)  # [N_rays]
-
-    # if sigma_loss is not None and ray_batch.shape[-1] > 11:
-    #     depths = ray_batch[:, 8]
-    #     ret['sigma_loss'] = sigma_loss.calculate_loss(rays_o, rays_d, viewdirs, near, far, depths, network_query_fn,
-    #                                                   network_fine)
 
     for k in ret:
         if jt.isnan(ret[k]).any() or jt.isinf(ret[k]).any():
@@ -542,10 +545,12 @@ def train():
         rgb_pose = poses[img_i, :3, :4]
 
         if args.N_rand is not None:
+            # translate origins and directions from camera to world coordinates
             rays_o, rays_d = get_rays(height, width, focal, jt.array(rgb_pose))  # (height, W, 3), (height, W, 3)
 
             # steps to train on central crops
             if i < args.precrop_iters:
+                # precrop_frac: fraction of img taken for central crops
                 dH = int(height // 2 * args.precrop_frac)
                 dW = int(width // 2 * args.precrop_frac)
                 coords = jt.stack(
@@ -648,10 +653,6 @@ def train():
         if args.entropy_end_iter is not None:
             if i > args.entropy_end_iter:
                 entropy_ray_zvals_loss = 0
-
-        ########################################################
-        #           Infomation Gain Reduction Loss             #
-        ########################################################
 
         trans = extras['raw'][..., -1]
         loss = img_loss \

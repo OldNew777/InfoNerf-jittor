@@ -5,21 +5,21 @@ import json
 import jittor as jt
 import cv2
 
-# translate t
+# translate matrix
 trans_t = lambda t: jt.array([
     [1, 0, 0, 0],
     [0, 1, 0, 0],
     [0, 0, 1, t],
     [0, 0, 0, 1]]).float32()
 
-# rotate phi
+# rotate phi matrix
 rot_phi = lambda phi: jt.array([
     [1, 0, 0, 0],
     [0, np.cos(phi), -np.sin(phi), 0],
     [0, np.sin(phi), np.cos(phi), 0],
     [0, 0, 0, 1]]).float32()
 
-# rotate theta
+# rotate theta matrix
 rot_theta = lambda theta: jt.array([
     [np.cos(theta), 0, -np.sin(theta), 0],
     [0, 1, 0, 0],
