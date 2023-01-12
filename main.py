@@ -544,6 +544,7 @@ def train():
         if args.N_rand is not None:
             rays_o, rays_d = get_rays(height, width, focal, jt.array(rgb_pose))  # (height, W, 3), (height, W, 3)
 
+            # steps to train on central crops
             if i < args.precrop_iters:
                 dH = int(height // 2 * args.precrop_frac)
                 dW = int(width // 2 * args.precrop_frac)
@@ -642,7 +643,7 @@ def train():
 
         if args.entropy:
             entropy_ray_zvals_loss = fun_entropy_loss.ray_zvals(alpha_raw, acc_raw)
-            logging_info['entropy_ray_zvals'] = entropy_ray_zvals_loss
+            logging_info['entropy_ray_zvals'] = entropy_ray_zvals_loss.item()
 
         if args.entropy_end_iter is not None:
             if i > args.entropy_end_iter:
